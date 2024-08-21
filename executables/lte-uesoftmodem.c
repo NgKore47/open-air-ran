@@ -66,7 +66,7 @@
 #include "nfapi/oai_integration/vendor_ext.h"
 #include "UTIL/OTG/otg_tx.h"
 #include "UTIL/OTG/otg_externs.h"
-#include "UTIL/MATH/oml.h"
+#include "SIMULATION/TOOLS/sim.h"
 #include "common/utils/LOG/vcd_signal_dumper.h"
 #include "UTIL/OPT/opt.h"
 
@@ -75,9 +75,6 @@
 
 #include "lte-softmodem.h"
 #include "executables/softmodem-common.h"
-
-/* temporary compilation wokaround (UE/eNB split */
-
 
 pthread_cond_t nfapi_sync_cond;
 pthread_mutex_t nfapi_sync_mutex;
@@ -146,8 +143,6 @@ int                      rx_input_level_dBm;
 
 static LTE_DL_FRAME_PARMS      *frame_parms[MAX_NUM_CCs];
 
-uint64_t num_missed_slots=0; // counter for the number of missed slots
-
 // prototypes from function implemented in lte-ue.c, probably should be elsewhere in a include file.
 extern void init_UE_stub_single_thread(int nb_inst,int eMBMS_active, int uecap_xer_in, char *emul_iface);
 extern PHY_VARS_UE *init_ue_vars(LTE_DL_FRAME_PARMS *frame_parms, uint8_t UE_id, uint8_t abstraction_flag);
@@ -170,7 +165,6 @@ double cpuf;
 extern char uecap_xer[1024];
 char uecap_xer_in=0;
 
-int oaisim_flag=0;
 
 /* see file openair2/LAYER2/MAC/main.c for why abstraction_flag is needed
  * this is very hackish - find a proper solution
@@ -274,8 +268,7 @@ static void get_options(configmodule_interface_t *cfg)
 {
   int CC_id=0;
   int tddflag=0;
-  int dumpframe=0;
-  int timingadv=0;
+  int dumpframe = 0;
   uint8_t nfapi_mode = NFAPI_MONOLITHIC;
 
   set_default_frame_parms(frame_parms);
@@ -288,8 +281,6 @@ static void get_options(configmodule_interface_t *cfg)
   config_process_cmdline(cfg, cmdline_uemodeparams, sizeofArray(cmdline_uemodeparams), NULL);
   config_process_cmdline(cfg, cmdline_ueparams, sizeofArray(cmdline_ueparams), NULL);
   nfapi_setmode(nfapi_mode);
-
-  get_softmodem_params()->hw_timing_advance = timingadv;
 
   if ( (cmdline_uemodeparams[CMDLINE_CALIBUERX_IDX].paramflags &  PARAMFLAG_PARAMSET) != 0) mode = rx_calib_ue;
 
@@ -497,18 +488,21 @@ static inline void wait_nfapi_init(char *thread_name) {
 }
 
 static void init_pdcp(int ue_id) {
-  uint32_t pdcp_initmask = (!IS_SOFTMODEM_NOS1) ? LINK_ENB_PDCP_TO_GTPV1U_BIT : (LINK_ENB_PDCP_TO_GTPV1U_BIT | PDCP_USE_NETLINK_BIT | LINK_ENB_PDCP_TO_IP_DRIVER_BIT);
+  uint32_t pdcp_initmask = !IS_SOFTMODEM_NOS1 ? LINK_ENB_PDCP_TO_GTPV1U_BIT : LINK_ENB_PDCP_TO_GTPV1U_BIT;
 
   if (IS_SOFTMODEM_RFSIM || (nfapi_getmode()==NFAPI_UE_STUB_PNF)) {
     pdcp_initmask = pdcp_initmask | UE_NAS_USE_TUN_BIT;
   }
 
-  if (IS_SOFTMODEM_NOKRNMOD)
-    pdcp_initmask = pdcp_initmask | UE_NAS_USE_TUN_BIT;
+  // previous code was:
+  //   if (IS_SOFTMODEM_NOKRNMOD)
+  //     pdcp_initmask = pdcp_initmask | UE_NAS_USE_TUN_BIT;
+  // The kernel module (KRNMOD) has been removed from the project, so the 'if'
+  // was removed but the flag 'pdcp_initmask' was kept, as "no kernel module"
+  // was always set. further refactoring could take it out
+  pdcp_initmask = pdcp_initmask | UE_NAS_USE_TUN_BIT;
 
   pdcp_module_init(pdcp_initmask, ue_id);
-  pdcp_set_rlc_data_req_func((send_rlc_data_req_func_t) rlc_data_req);
-  pdcp_set_pdcp_data_ind_func((pdcp_data_ind_func_t) pdcp_data_ind);
 }
 
 // Stupid function addition because UE itti messages queues definition is common with eNB
@@ -536,7 +530,7 @@ int main( int argc, char **argv ) {
   mode = normal_txrx;
   memset(&openair0_cfg[0],0,sizeof(openair0_config_t)*MAX_CARDS);
   logInit();
-  set_latency_target();
+  lock_memory_to_ram();
   printf("Reading in command-line options\n");
 
   for (int i=0; i<MAX_NUM_CCs; i++) tx_max_power[i]=23;
@@ -582,9 +576,10 @@ int main( int argc, char **argv ) {
   // to make a graceful exit when ctrl-c is pressed
   set_softmodem_sighandler();
 #ifndef PACKAGE_VERSION
-#  define PACKAGE_VERSION "UNKNOWN-EXPERIMENTAL"
+#define PACKAGE_VERSION "UNKNOWN-EXPERIMENTAL"
 #endif
-  LOG_I(HW, "Version: %s\n", PACKAGE_VERSION);
+  // strdup to put the sring in the core file for post mortem identification
+  LOG_I(HW, "Version: %s\n", strdup(PACKAGE_VERSION));
 
   // init the parameters
   for (CC_id=0; CC_id<MAX_NUM_CCs; CC_id++) {
@@ -622,7 +617,6 @@ int main( int argc, char **argv ) {
   }
 
   printf("ITTI tasks created\n");
-  mlockall(MCL_CURRENT | MCL_FUTURE);
   rt_sleep_ns(10*100000000ULL);
   int eMBMS_active = 0;
 

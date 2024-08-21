@@ -1151,8 +1151,7 @@ void ulsch_common_procedures(PHY_VARS_UE *ue,
 
   nsymb = (frame_parms->Ncp == 0) ? 14 : 12;
 
-  ulsch_start = ue->rx_offset + subframe_tx * frame_parms->samples_per_tti
-                - ue->hw_timing_advance - ue->timing_advance - ue->N_TA_offset + 5;
+  ulsch_start = ue->rx_offset + subframe_tx * frame_parms->samples_per_tti - ue->timing_advance - ue->N_TA_offset + 5;
 
   if(ulsch_start < 0)
     ulsch_start = ulsch_start + (LTE_NUMBER_OF_SUBFRAMES_PER_FRAME*frame_parms->samples_per_tti);
@@ -1210,16 +1209,6 @@ void ulsch_common_procedures(PHY_VARS_UE *ue,
       ((short *)ue->common_vars.txdata[aa])[2*k] = ((short *)dummy_tx_buffer)[2*l];
       ((short *)ue->common_vars.txdata[aa])[2*k+1] = ((short *)dummy_tx_buffer)[2*l+1];
     }
-
-    /*
-    only for debug
-    LOG_I(PHY,"ul-signal [subframe: %d, ulsch_start %d, TA: %d, rxOffset: %d, timing_advance: %d, hw_timing_advance: %d]\n",subframe_tx, ulsch_start, ue->N_TA_offset, ue->rx_offset, ue->timing_advance, ue->hw_timing_advance);
-    if( (crash == 1) && (subframe_tx == 0) )
-    {
-      LOG_E(PHY,"***** DUMP TX Signal [ulsch_start %d] *****\n",ulsch_start);
-      LOG_M("txBuff.m","txSignal",&ue->common_vars.txdata[aa][ulsch_start],frame_parms->samples_per_tti,1,1);
-    }
-    */
   } //nb_antennas_tx
 
   if ( LOG_DEBUGFLAG(UE_TIMING)) {
@@ -2347,8 +2336,15 @@ if((ue->frame_parms.FeMBMS_active == 0)|| is_fembms_cas_subframe(frame_rx,subfra
       dummy[0] = ue->pbch_vars[eNB_id]->decoded_output[2];
       dummy[1] = ue->pbch_vars[eNB_id]->decoded_output[1];
       dummy[2] = ue->pbch_vars[eNB_id]->decoded_output[0];
-      trace_pdu( DIRECTION_DOWNLINK, dummy, WS_C_RNTI, ue->Mod_id, 0, 0,
-                 frame_rx, subframe_rx, 0, 0);
+      ws_trace_t tmp = {.direction = DIRECTION_DOWNLINK,
+                        .pdu_buffer = dummy,
+                        .pdu_buffer_size = sizeof(dummy),
+                        .ueid = ue->Mod_id,
+                        .rntiType = WS_C_RNTI,
+                        .rnti = ue->Mod_id,
+                        .sysFrame = frame_rx,
+                        .subframe = subframe_rx};
+      trace_pdu(&tmp);
     }
 
     if (pbch_tx_ant>2) {

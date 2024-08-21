@@ -72,8 +72,6 @@ static int DEFRUTPCORES[] = {2,4,6,8};
 #include "ENB_APP/enb_paramdef.h"
 #include "common/config/config_userapi.h"
 
-#include "SIMULATION/ETH_TRANSPORT/proto.h"
-
 #include "T.h"
 
 #include "executables/softmodem-common.h"
@@ -92,12 +90,6 @@ void prach_procedures(PHY_VARS_eNB *eNB,int br_flag);
 void stop_RU(RU_t **rup,int nb_ru);
 
 static void do_ru_synch(RU_t *ru);
-
-void configure_ru(int idx,
-                  void *arg);
-
-void configure_rru(int idx,
-                   void *arg);
 
 void reset_proc(RU_t *ru);
 int connect_rau(RU_t *ru);
@@ -808,26 +800,31 @@ void tx_rf(RU_t *ru,
     /* add fail safe for late command end */
    VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME( VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_WRITE, 1 );
     // prepare tx buffer pointers
-    txs = ru->rfdevice.trx_write_func(&ru->rfdevice,
-                                      timestamp+ru->ts_offset-ru->openair0_cfg.tx_sample_advance-sf_extension,
-                                      txp,
-                                      siglen+sf_extension,
-                                      ru->nb_tx,
-                                      flags);
-    ru->south_out_cnt++;
-    LOG_D(PHY,"south_out_cnt %d\n",ru->south_out_cnt);
-    int se = dB_fixed(signal_energy(txp[0],siglen+sf_extension));
+   txs = ru->rfdevice
+             .trx_write_func(&ru->rfdevice, timestamp + ru->ts_offset - sf_extension, txp, siglen + sf_extension, ru->nb_tx, flags);
+   ru->south_out_cnt++;
+   LOG_D(PHY, "south_out_cnt %d\n", ru->south_out_cnt);
+   int se = dB_fixed(signal_energy(txp[0], siglen + sf_extension));
 
-    if (SF_type == SF_S) LOG_D(PHY,"[TXPATH] RU %d tx_rf (en %d,len %d), writing to TS %llu, frame %d, unwrapped_frame %d, subframe %d\n",ru->idx, se,
-                                 siglen+sf_extension, (long long unsigned int)timestamp, frame, proc->frame_tx_unwrap, subframe);
+   if (SF_type == SF_S)
+     LOG_D(PHY,
+           "[TXPATH] RU %d tx_rf (en %d,len %d), writing to TS %llu, frame %d, unwrapped_frame %d, subframe %d\n",
+           ru->idx,
+           se,
+           siglen + sf_extension,
+           (long long unsigned int)timestamp,
+           frame,
+           proc->frame_tx_unwrap,
+           subframe);
 
-    VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME( VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_WRITE, 0 );
+   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_WRITE, 0);
 
-    //    AssertFatal(txs ==  siglen+sf_extension,"TX : Timeout (sent %d/%d)\n",txs, siglen);
-    if( usrp_tx_thread == 0 && (txs !=  siglen+sf_extension) && (late_control==STATE_BURST_NORMAL) ) { /* add fail safe for late command */
-      late_control=STATE_BURST_TERMINATE;
-      LOG_E(PHY,"TX : Timeout (sent %d/%d) state =%d\n",txs, siglen,late_control);
-    }
+   //    AssertFatal(txs ==  siglen+sf_extension,"TX : Timeout (sent %d/%d)\n",txs, siglen);
+   if (usrp_tx_thread == 0 && (txs != siglen + sf_extension)
+       && (late_control == STATE_BURST_NORMAL)) { /* add fail safe for late command */
+     late_control = STATE_BURST_TERMINATE;
+     LOG_E(PHY, "TX : Timeout (sent %d/%d) state =%d\n", txs, siglen, late_control);
+   }
   } else if (IS_SOFTMODEM_RFSIM ) {
     // in case of rfsim, we always enable tx because we need to feed rx of the opposite side
     // we write 1 single I/Q sample to trigger Rx (rfsim will fill gaps with 0 I/Q)
@@ -836,15 +833,15 @@ void tx_rf(RU_t *ru,
     memset(dummy_tx_data,0,sizeof(dummy_tx_data));
     for (int i=0; i<ru->frame_parms->nb_antennas_tx; i++)
       dummy_tx[i]= dummy_tx_data[i];
-    
-    AssertFatal( 1 ==
-                 ru->rfdevice.trx_write_func(&ru->rfdevice,
-                                             timestamp+ru->ts_offset-ru->openair0_cfg.tx_sample_advance-sf_extension,
-                                             dummy_tx,
-                                             1,
-                                             ru->frame_parms->nb_antennas_tx,
-                                             4),"");
-    
+
+    AssertFatal(1
+                    == ru->rfdevice.trx_write_func(&ru->rfdevice,
+                                                   timestamp + ru->ts_offset - sf_extension,
+                                                   dummy_tx,
+                                                   1,
+                                                   ru->frame_parms->nb_antennas_tx,
+                                                   4),
+                "");
   }
 }
 
@@ -2178,8 +2175,6 @@ int stop_rf(RU_t *ru) {
   return 0;
 }
 
-
-extern void configure_ru(int idx, void *arg);
 extern void fep_full(RU_t *ru, int subframe);
 extern void feptx_ofdm(RU_t *ru, int frame_tx, int tti_tx);
 extern void feptx_ofdm_2thread(RU_t *ru, int frame_tx, int tti_tx);

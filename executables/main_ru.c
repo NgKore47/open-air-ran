@@ -160,16 +160,17 @@ int main ( int argc, char **argv )
   T_Config_Init();
 #endif
   printf("configuring for RRU\n");
-
 #ifndef PACKAGE_VERSION
-#  define PACKAGE_VERSION "UNKNOWN-EXPERIMENTAL"
+#define PACKAGE_VERSION "UNKNOWN-EXPERIMENTAL"
 #endif
-  LOG_I(HW, "Version: %s\n", PACKAGE_VERSION);
+  // strdup to put the sring in the core file for post mortem identification
+  LOG_I(HW, "Version: %s\n", strdup(PACKAGE_VERSION));
 
   /* Read configuration */
 
   printf("About to Init RU threads\n");
-  
+
+  lock_memory_to_ram();
 
   RU_t *ru=&ru_m;
 
@@ -330,7 +331,6 @@ int main ( int argc, char **argv )
 
   set_worker_conf("WORKER_ENABLE");
 
-  mlockall(MCL_CURRENT | MCL_FUTURE);
   pthread_cond_init(&sync_cond,NULL);
   pthread_mutex_init(&sync_mutex, NULL);
  

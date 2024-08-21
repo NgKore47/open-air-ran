@@ -31,7 +31,7 @@
  */
 
 /* RRC */
-#include "RRC/NR_UE/rrc_proto.h"
+#include "RRC/NR_UE/L2_interface_ue.h"
 
 /* MAC */
 #include "LAYER2/NR_MAC_COMMON/nr_mac_extern.h"
@@ -41,11 +41,18 @@
 #include <executables/softmodem-common.h>
 #include "openair2/LAYER2/RLC/rlc.h"
 
+static double get_ta_Common_ms(NR_NTN_Config_r17_t *ntn_Config_r17)
+{
+  if (ntn_Config_r17 && ntn_Config_r17->ta_Info_r17)
+    return ntn_Config_r17->ta_Info_r17->ta_Common_r17 * 4.072e-6; // ta_Common_r17 is in units of 4.072e-3 µs
+  return 0.0;
+}
+
 int16_t get_prach_tx_power(NR_UE_MAC_INST_t *mac)
 {
   RA_config_t *ra = &mac->ra;
   int16_t pathloss = compute_nr_SSB_PL(mac, mac->ssb_measurements.ssb_rsrp_dBm);
-  int16_t ra_preamble_rx_power = (int16_t)(ra->prach_resources.ra_PREAMBLE_RECEIVED_TARGET_POWER - pathloss + 30);
+  int16_t ra_preamble_rx_power = (int16_t)(ra->prach_resources.ra_PREAMBLE_RECEIVED_TARGET_POWER + pathloss);
   return min(ra->prach_resources.RA_PCMAX, ra_preamble_rx_power);
 }
 
@@ -61,7 +68,7 @@ void init_RA(NR_UE_MAC_INST_t *mac,
 {
   mac->state = UE_PERFORMING_RA;
   RA_config_t *ra = &mac->ra;
-  ra->RA_active = 1;
+  ra->RA_active = true;
   ra->ra_PreambleIndex = -1;
   ra->RA_usedGroupA = 1;
   ra->RA_RAPID_found = 0;
@@ -74,11 +81,24 @@ void init_RA(NR_UE_MAC_INST_t *mac,
   fapi_nr_config_request_t *cfg = &mac->phy_config.config_req;
 
   prach_resources->RA_PREAMBLE_BACKOFF = 0;
+  AssertFatal(nr_rach_ConfigCommon && nr_rach_ConfigCommon->msg1_SubcarrierSpacing,
+              "Cannot handle yet the scenario without msg1_SubcarrierSpacing (L839)\n");
   NR_SubcarrierSpacing_t prach_scs = *nr_rach_ConfigCommon->msg1_SubcarrierSpacing;
   int n_prbs = get_N_RA_RB(prach_scs, mac->current_UL_BWP->scs);
   int start_prb = rach_ConfigGeneric->msg1_FrequencyStart + mac->current_UL_BWP->BWPStart;
   // PRACH shall be as specified for QPSK modulated DFT-s-OFDM of equivalent RB allocation (38.101-1)
-  prach_resources->RA_PCMAX = nr_get_Pcmax(mac, 2, false, prach_scs, cfg->carrier_config.dl_grid_size[prach_scs], true, n_prbs, start_prb);
+  prach_resources->RA_PCMAX = nr_get_Pcmax(mac->p_Max,
+                                           mac->nr_band,
+                                           mac->frame_type,
+                                           mac->frequency_range,
+                                           mac->current_UL_BWP->channel_bandwidth,
+                                           2,
+                                           false,
+                                           prach_scs,
+                                           cfg->carrier_config.dl_grid_size[prach_scs],
+                                           true,
+                                           n_prbs,
+                                           start_prb);
   prach_resources->RA_PREAMBLE_TRANSMISSION_COUNTER = 1;
   prach_resources->RA_PREAMBLE_POWER_RAMPING_COUNTER = 1;
   prach_resources->POWER_OFFSET_2STEP_RA = 0;
@@ -86,26 +106,24 @@ void init_RA(NR_UE_MAC_INST_t *mac,
 
   if (rach_ConfigDedicated) {
     if (rach_ConfigDedicated->cfra){
-      LOG_I(MAC, "Initialization of 2-step contention-free random access procedure\n");
+      LOG_I(NR_MAC, "Initialization of 2-step contention-free random access procedure\n");
       prach_resources->RA_TYPE = RA_2STEP;
       ra->cfra = 1;
     } else if (rach_ConfigDedicated->ext1){
       if (rach_ConfigDedicated->ext1->cfra_TwoStep_r16){
-        LOG_I(MAC, "Setting RA type to 2-step...\n");
+        LOG_I(NR_MAC, "Setting RA type to 2-step...\n");
         prach_resources->RA_TYPE = RA_2STEP;
         ra->cfra = 1;
       } else {
-        LOG_E(MAC, "Config not handled\n");
+        LOG_E(NR_MAC, "Config not handled\n");
       }
     } else {
-      LOG_E(MAC, "Config not handled\n");
+      LOG_E(NR_MAC, "Config not handled\n");
     }
-  } else if (nr_rach_ConfigCommon){
-    LOG_I(MAC, "Initialization of 4-step contention-based random access procedure\n");
+  } else {
+    LOG_I(NR_MAC, "Initialization of 4-step contention-based random access procedure\n");
     prach_resources->RA_TYPE = RA_4STEP;
     ra->cfra = 0;
-  } else {
-    LOG_E(MAC, "Config not handled\n");
   }
 
   switch (rach_ConfigGeneric->powerRampingStep){ // in dB
@@ -504,26 +522,6 @@ void ra_preambles_config(NR_PRACH_RESOURCES_t *prach_resources, NR_UE_MAC_INST_t
   }
 }
 
-// RA-RNTI computation (associated to PRACH occasion in which the RA Preamble is transmitted)
-// - this does not apply to contention-free RA Preamble for beam failure recovery request
-// - getting star_symb, SFN_nbr from table 6.3.3.2-3 (TDD and FR1 scenario)
-// - ul_carrier_id: UL carrier used for RA preamble transmission, hardcoded for NUL carrier
-// - f_id: index of the PRACH occasion in the frequency domain
-// - s_id is starting symbol of the PRACH occasion [0...14]
-// - t_id is the first slot of the PRACH occasion in a system frame [0...80]
-void set_ra_rnti(NR_UE_MAC_INST_t *mac, fapi_nr_ul_config_prach_pdu *prach_pdu){
-
-  RA_config_t *ra = &mac->ra;
-  uint8_t ul_carrier_id = 0; // NUL
-  uint8_t f_id = prach_pdu->num_ra;
-  uint8_t t_id = prach_pdu->prach_slot;
-  uint8_t s_id = prach_pdu->prach_start_symbol;
-
-  ra->ra_rnti = 1 + s_id + 14 * t_id + 1120 * f_id + 8960 * ul_carrier_id;
-
-  LOG_D(MAC, "Computed ra_RNTI is %x \n", ra->ra_rnti);
-}
-
 // This routine implements Section 5.1.2 (UE Random Access Resource Selection)
 // and Section 5.1.3 (Random Access Preamble Transmission) from 3GPP TS 38.321
 // - currently the PRACH preamble is set through RRC configuration for 4-step CFRA mode
@@ -583,7 +581,7 @@ void nr_get_prach_resources(NR_UE_MAC_INST_t *mac,
 void nr_Msg1_transmitted(NR_UE_MAC_INST_t *mac)
 {
   RA_config_t *ra = &mac->ra;
-  ra->ra_state = WAIT_RAR;
+  ra->ra_state = nrRA_WAIT_RAR;
   ra->RA_attempt_number++;
 }
 
@@ -591,37 +589,41 @@ void nr_Msg3_transmitted(NR_UE_MAC_INST_t *mac, uint8_t CC_id, frame_t frameP, s
 {
   RA_config_t *ra = &mac->ra;
   NR_RACH_ConfigCommon_t *nr_rach_ConfigCommon = mac->current_UL_BWP->rach_ConfigCommon;
-  long mu = mac->current_UL_BWP->scs;
-  int subframes_per_slot = nr_slots_per_frame[mu]/10;
+  const double ta_Common_ms = get_ta_Common_ms(mac->sc_info.ntn_Config_r17);
+  const int mu = mac->current_UL_BWP->scs;
+  const int slots_per_ms = nr_slots_per_frame[mu] / 10;
 
-  // start contention resolution timer (cnt in slots)
-  int RA_contention_resolution_timer_subframes = (nr_rach_ConfigCommon->ra_ContentionResolutionTimer + 1)<<3;
+  // start contention resolution timer
+  const int RA_contention_resolution_timer_ms = (nr_rach_ConfigCommon->ra_ContentionResolutionTimer + 1) << 3;
+  const int RA_contention_resolution_timer_slots = RA_contention_resolution_timer_ms * slots_per_ms;
+  const int ta_Common_slots = (int)ceil(ta_Common_ms * slots_per_ms);
 
-  ra->RA_contention_resolution_target_frame = (frameP + (RA_contention_resolution_timer_subframes/10)) % MAX_FRAME_NUMBER;
-  ra->RA_contention_resolution_target_slot = (slotP + (RA_contention_resolution_timer_subframes * subframes_per_slot)) % nr_slots_per_frame[mu];
+  // timer step 1 slot and timer target given by ra_ContentionResolutionTimer + ta-Common-r17
+  nr_timer_setup(&ra->contention_resolution_timer, RA_contention_resolution_timer_slots + ta_Common_slots, 1);
+  nr_timer_start(&ra->contention_resolution_timer);
 
-  LOG_D(MAC,"[UE %d] CB-RA: contention resolution timer set in frame.slot %d.%d and expiring in %d.%d\n",
-        mac->ue_id,
-        frameP,
-        slotP,
-        ra->RA_contention_resolution_target_frame,
-        ra->RA_contention_resolution_target_slot);
-
-  ra->RA_contention_resolution_timer_active = 1;
-  ra->ra_state = WAIT_CONTENTION_RESOLUTION;
+  ra->ra_state = nrRA_WAIT_CONTENTION_RESOLUTION;
 }
 
-void nr_get_msg3_payload(NR_UE_MAC_INST_t *mac, uint8_t *buf, int TBS_max)
+static uint8_t *fill_msg3_crnti_pdu(RA_config_t *ra, uint8_t *pdu, uint16_t crnti)
+{
+  // RA triggered by UE MAC with C-RNTI in MAC CE
+  LOG_D(NR_MAC, "Generating MAC CE with C-RNTI for MSG3 %x\n", crnti);
+  *(NR_MAC_SUBHEADER_FIXED *)pdu = (NR_MAC_SUBHEADER_FIXED){.LCID = UL_SCH_LCID_C_RNTI, .R = 0};
+  pdu += sizeof(NR_MAC_SUBHEADER_FIXED);
+
+  // C-RNTI MAC CE (2 octets)
+  uint16_t rnti_pdu = ((crnti & 0xFF) << 8) | ((crnti >> 8) & 0xFF);
+  memcpy(pdu, &rnti_pdu, sizeof(rnti_pdu));
+  pdu += sizeof(rnti_pdu);
+  ra->t_crnti = crnti;
+  return pdu;
+}
+
+static uint8_t *fill_msg3_pdu_from_rlc(NR_UE_MAC_INST_t *mac, uint8_t *pdu, int TBS_max)
 {
   RA_config_t *ra = &mac->ra;
-
-  // we already stored MSG3 in the buffer, we can use that
-  if (ra->Msg3_buffer) {
-    buf = ra->Msg3_buffer;
-    return;
-  }
-
-  uint8_t *pdu = buf;
+  // regular MSG3 with PDU coming from higher layers
   *(NR_MAC_SUBHEADER_FIXED *)pdu = (NR_MAC_SUBHEADER_FIXED){.LCID = UL_SCH_LCID_CCCH};
   pdu += sizeof(NR_MAC_SUBHEADER_FIXED);
   tbs_size_t len = mac_rlc_data_req(mac->ue_id,
@@ -642,6 +644,25 @@ void nr_get_msg3_payload(NR_UE_MAC_INST_t *mac, uint8_t *buf, int TBS_max)
   // We copy from persisted memory to another persisted memory
   memcpy(ra->cont_res_id, pdu, sizeof(uint8_t) * 6);
   pdu += len;
+  return pdu;
+}
+
+void nr_get_msg3_payload(NR_UE_MAC_INST_t *mac, uint8_t *buf, int TBS_max)
+{
+  RA_config_t *ra = &mac->ra;
+
+  // we already stored MSG3 in the buffer, we can use that
+  if (ra->Msg3_buffer) {
+    memcpy(buf, ra->Msg3_buffer, sizeof(uint8_t) * TBS_max);
+    return;
+  }
+
+  uint8_t *pdu = buf;
+  if (ra->msg3_C_RNTI)
+    pdu = fill_msg3_crnti_pdu(ra, pdu, mac->crnti);
+  else 
+    pdu = fill_msg3_pdu_from_rlc(mac, pdu, TBS_max);
+
   AssertFatal(TBS_max >= pdu - buf, "Allocated resources are not enough for Msg3!\n");
   // Padding: fill remainder with 0
   LOG_D(NR_MAC, "Remaining %ld bytes, filling with padding\n", pdu - buf);
@@ -673,10 +694,10 @@ void nr_ue_get_rach(NR_UE_MAC_INST_t *mac, int CC_id, frame_t frame, uint8_t gNB
   NR_PRACH_RESOURCES_t *prach_resources = &ra->prach_resources;
 
   // Delay init RA procedure to allow the convergence of the IIR filter on PRACH noise measurements at gNB side
-  if (ra->ra_state == RA_UE_IDLE) {
+  if (ra->ra_state == nrRA_UE_IDLE) {
     if ((mac->first_sync_frame > -1 || get_softmodem_params()->do_ra || get_softmodem_params()->nsa) &&
        ((MAX_FRAME_NUMBER + frame - mac->first_sync_frame) % MAX_FRAME_NUMBER) > 150) {
-      ra->ra_state = GENERATE_PREAMBLE;
+      ra->ra_state = nrRA_GENERATE_PREAMBLE;
     } else {
       LOG_D(NR_MAC,"PRACH Condition not met: ra state %d, frame %d, sync_frame %d\n", ra->ra_state, frame, mac->first_sync_frame);
       return;
@@ -685,9 +706,8 @@ void nr_ue_get_rach(NR_UE_MAC_INST_t *mac, int CC_id, frame_t frame, uint8_t gNB
 
   LOG_D(NR_MAC, "[UE %d][%d.%d]: ra_state %d, RA_active %d\n", mac->ue_id, frame, nr_slot_tx, ra->ra_state, ra->RA_active);
 
-  if (ra->ra_state > RA_UE_IDLE && ra->ra_state < RA_SUCCEEDED) {
-
-    if (ra->RA_active == 0) {
+  if (ra->ra_state > nrRA_UE_IDLE && ra->ra_state < nrRA_SUCCEEDED) {
+    if (!ra->RA_active) {
       NR_RACH_ConfigCommon_t *setup = mac->current_UL_BWP->rach_ConfigCommon;
       NR_RACH_ConfigGeneric_t *rach_ConfigGeneric = &setup->rach_ConfigGeneric;
       init_RA(mac, &ra->prach_resources, setup, rach_ConfigGeneric, ra->rach_ConfigDedicated);
@@ -754,7 +774,7 @@ void nr_ue_get_rach(NR_UE_MAC_INST_t *mac, int CC_id, frame_t frame, uint8_t gNB
 
         // Fill in preamble and PRACH resources
         ra->RA_window_cnt--;
-        if (ra->ra_state == GENERATE_PREAMBLE) {
+        if (ra->ra_state == nrRA_GENERATE_PREAMBLE) {
           nr_get_prach_resources(mac, CC_id, gNB_id, prach_resources, rach_ConfigDedicated);
         }
       } else if (ra->RA_backoff_cnt > 0) {
@@ -763,14 +783,14 @@ void nr_ue_get_rach(NR_UE_MAC_INST_t *mac, int CC_id, frame_t frame, uint8_t gNB
 
         ra->RA_backoff_cnt--;
 
-        if ((ra->RA_backoff_cnt > 0 && ra->ra_state == GENERATE_PREAMBLE) || ra->RA_backoff_cnt == 0) {
+        if ((ra->RA_backoff_cnt > 0 && ra->ra_state == nrRA_GENERATE_PREAMBLE) || ra->RA_backoff_cnt == 0) {
           nr_get_prach_resources(mac, CC_id, gNB_id, prach_resources, rach_ConfigDedicated);
         }
       }
     }
   }
 
-  if (ra->RA_contention_resolution_timer_active) {
+  if (is_nr_timer_active(ra->contention_resolution_timer)) {
     nr_ue_contention_resolution(mac, CC_id, frame, nr_slot_tx, prach_resources);
   }
 }
@@ -781,11 +801,16 @@ void nr_get_RA_window(NR_UE_MAC_INST_t *mac)
   NR_RACH_ConfigCommon_t *setup = mac->current_UL_BWP->rach_ConfigCommon;
   AssertFatal(&setup->rach_ConfigGeneric != NULL, "In %s: FATAL! rach_ConfigGeneric is NULL...\n", __FUNCTION__);
   NR_RACH_ConfigGeneric_t *rach_ConfigGeneric = &setup->rach_ConfigGeneric;
+  const double ta_Common_ms = get_ta_Common_ms(mac->sc_info.ntn_Config_r17);
+  const int mu = mac->current_DL_BWP->scs;
+  const int slots_per_ms = nr_slots_per_frame[mu] / 10;
  
-  int ra_ResponseWindow = rach_ConfigGeneric->ra_ResponseWindow;
-  int mu = mac->current_DL_BWP->scs;
+  const int ra_Offset_slots = ra->RA_offset * nr_slots_per_frame[mu];
+  const int ta_Common_slots = (int)ceil(ta_Common_ms * slots_per_ms);
 
-  ra->RA_window_cnt = ra->RA_offset * nr_slots_per_frame[mu]; // taking into account the 2 frames gap introduced by OAI gNB
+  ra->RA_window_cnt = ra_Offset_slots + ta_Common_slots; // taking into account the 2 frames gap introduced by OAI gNB
+
+  int ra_ResponseWindow = rach_ConfigGeneric->ra_ResponseWindow;
 
   switch (ra_ResponseWindow) {
     case NR_RACH_ConfigGeneric__ra_ResponseWindow_sl1:
@@ -826,16 +851,12 @@ void nr_ue_contention_resolution(NR_UE_MAC_INST_t *mac, int cc_id, frame_t frame
 {
   RA_config_t *ra = &mac->ra;
 
-  if (ra->RA_contention_resolution_timer_active == 1) {
-    if (frame >= ra->RA_contention_resolution_target_frame &&
-      slot >= ra->RA_contention_resolution_target_slot) {
-      ra->t_crnti = 0;
-      ra->RA_active = 0;
-      ra->RA_contention_resolution_timer_active = 0;
-      // Signal PHY to quit RA procedure
-      LOG_E(MAC, "[UE %d] CB-RA: Contention resolution timer has expired, RA procedure has failed...\n", mac->ue_id);
-      nr_ra_failed(mac, cc_id, prach_resources, frame, slot);
-    }
+  if (nr_timer_expired(ra->contention_resolution_timer)) {
+    ra->t_crnti = 0;
+    nr_timer_stop(&ra->contention_resolution_timer);
+    // Signal PHY to quit RA procedure
+    LOG_E(MAC, "[UE %d] CB-RA: Contention resolution timer has expired, RA procedure has failed...\n", mac->ue_id);
+    nr_ra_failed(mac, cc_id, prach_resources, frame, slot);
   }
 }
 
@@ -852,15 +873,16 @@ void nr_ra_succeeded(NR_UE_MAC_INST_t *mac, const uint8_t gNB_index, const frame
     ra->RA_window_cnt = -1;
   } else {
     LOG_A(MAC, "[UE %d][%d.%d][RAPROC] RA procedure succeeded. CB-RA: Contention Resolution is successful.\n", mac->ue_id, frame, slot);
-    ra->RA_contention_resolution_timer_active = 0;
+    nr_timer_stop(&ra->contention_resolution_timer);
     mac->crnti = ra->t_crnti;
     ra->t_crnti = 0;
     LOG_D(MAC, "[UE %d][%d.%d] CB-RA: cleared contention resolution timer...\n", mac->ue_id, frame, slot);
   }
 
   LOG_D(MAC, "[UE %d] clearing RA_active flag...\n", mac->ue_id);
-  ra->RA_active = 0;
-  ra->ra_state = RA_SUCCEEDED;
+  ra->RA_active = false;
+  ra->msg3_C_RNTI = false;
+  ra->ra_state = nrRA_SUCCEEDED;
   mac->state = UE_CONNECTED;
   free_and_zero(ra->Msg3_buffer);
   nr_mac_rrc_ra_ind(mac->ue_id, frame, true);
@@ -886,7 +908,7 @@ void nr_ra_failed(NR_UE_MAC_INST_t *mac, uint8_t CC_id, NR_PRACH_RESOURCES_t *pr
   
   ra->first_Msg3 = true;
   ra->ra_PreambleIndex = -1;
-  ra->ra_state = RA_UE_IDLE;
+  ra->ra_state = nrRA_UE_IDLE;
 
   prach_resources->RA_PREAMBLE_TRANSMISSION_COUNTER++;
 
@@ -909,6 +931,25 @@ void nr_ra_failed(NR_UE_MAC_INST_t *mac, uint8_t CC_id, NR_PRACH_RESOURCES_t *pr
   }
 }
 
+void schedule_RA_after_SR_failure(NR_UE_MAC_INST_t *mac)
+{
+  LOG_W(NR_MAC, "Triggering new RA procedure for UE with RNTI %x\n", mac->crnti);
+  mac->state = UE_SYNC;
+  reset_ra(mac, false);
+  mac->ra.msg3_C_RNTI = true;
+  // release PUCCH for all Serving Cells;
+  // release SRS for all Serving Cells;
+  release_PUCCH_SRS(mac);
+  // clear any configured downlink assignments and uplink grants;
+  int scs = mac->current_UL_BWP->scs;
+  if (mac->dl_config_request)
+    memset(mac->dl_config_request, 0, sizeof(*mac->dl_config_request));
+  if (mac->ul_config_request)
+    clear_ul_config_request(mac, scs);
+  // clear any PUSCH resources for semi-persistent CSI reporting
+  // TODO we don't have semi-persistent CSI reporting
+}
+
 void prepare_msg4_feedback(NR_UE_MAC_INST_t *mac, int pid, int ack_nack)
 {
   NR_UE_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[pid];
@@ -917,7 +958,6 @@ void prepare_msg4_feedback(NR_UE_MAC_INST_t *mac, int pid, int ack_nack)
   mac->nr_ue_emul_l1.num_harqs = 1;
   PUCCH_sched_t pucch = {.n_CCE = current_harq->n_CCE,
                          .N_CCE = current_harq->N_CCE,
-                         .delta_pucch = current_harq->delta_pucch,
                          .ack_payload = ack_nack,
                          .n_harq = 1};
   current_harq->active = false;
@@ -930,7 +970,7 @@ void prepare_msg4_feedback(NR_UE_MAC_INST_t *mac, int pid, int ack_nack)
   fapi_nr_ul_config_request_pdu_t *pdu = lockGet_ul_config(mac, sched_frame, sched_slot, FAPI_NR_UL_CONFIG_TYPE_PUCCH);
   if (!pdu)
     return;
-  int ret = nr_ue_configure_pucch(mac, sched_slot, mac->ra.t_crnti, &pucch, &pdu->pucch_config_pdu);
+  int ret = nr_ue_configure_pucch(mac, sched_slot, sched_frame, mac->ra.t_crnti, &pucch, &pdu->pucch_config_pdu);
   if (ret != 0)
     remove_ul_config_last_item(pdu);
   release_ul_config(pdu, false);

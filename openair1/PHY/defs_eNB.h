@@ -519,7 +519,6 @@ typedef struct PHY_VARS_eNB_s {
   uint8_t              CC_id;
   uint8_t              configured;
   L1_proc_t            proc;
-  int                  single_thread_flag;
   int                  abstraction_flag;
   int                  num_RU;
   RU_t                 *RU_list[MAX_NUM_RU_PER_eNB];
@@ -616,10 +615,6 @@ typedef struct PHY_VARS_eNB_s {
   uint32_t max_peak_val;
   int max_eNB_id, max_sync_pos;
 
-  /// \brief sinr for all subcarriers of the current link (used only for abstraction).
-  /// first index: ? [0..N_RB_DL*12[
-  double *sinr_dB;
-
   /// N0 (used for abstraction)
   double N0;
 
@@ -712,8 +707,6 @@ typedef struct PHY_VARS_eNB_s {
   uint32_t total_dlsch_bitrate;
   uint32_t total_transmitted_bits;
   uint32_t total_system_throughput;
-
-  int hw_timing_advance;
 
   time_stats_t phy_proc_tx;
   time_stats_t phy_proc_rx;

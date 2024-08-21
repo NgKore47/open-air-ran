@@ -276,12 +276,14 @@ typedef struct pdusession_s {
   /* The transport layer address for the IP packets */
   pdu_session_type_t pdu_session_type;
   transport_layer_addr_t upf_addr;
-  /* S-GW Tunnel endpoint identifier */
+  /* Outgoing (UL) NG-U Tunnel Endpoint Identifier (S-GW/UPF) */
   uint32_t gtp_teid;
   /* Stores the DRB ID of the DRBs used by this PDU Session */
   uint8_t used_drbs[MAX_DRBS_PER_UE];
+  /* Incoming (DL) NG-U Tunnel Endpoint Identifier (S-GW/UPF) */
   uint32_t gNB_teid_N3;
   transport_layer_addr_t gNB_addr_N3;
+  /* Incoming (DL) NG-U Tunnel Endpoint Identifier (S-GW/UPF) */
   uint32_t UPF_teid_N3;
   transport_layer_addr_t UPF_addr_N3;
   nssai_t nssai;
@@ -306,7 +308,7 @@ typedef struct pdusession_setup_s {
   uint8_t pdu_session_type;
   transport_layer_addr_t gNB_addr;
 
-  /* UPF Tunnel endpoint identifier */
+  /* Incoming NG-U Tunnel Endpoint Identifier (S-GW/UPF) */
   uint32_t gtp_teid;
 
   /* qos flow list number */
@@ -406,6 +408,19 @@ typedef enum ngap_Cause_radio_network_e {
   NGAP_CAUSE_RADIO_NETWORK_RELEASE_DUE_TO_PRE_EMPTION,
   NGAP_CAUSE_RADIO_NETWORK_MULTIPLE_LOCATION_REPORTING_REFERENCE_ID_INSTANCES
 } ngap_Cause_radio_network_t;
+
+/**
+ * NGAP protocol cause values as per 9.3.1.2 `Cause` section in 3GPP TS 38.413.
+ */
+typedef enum ngap_cause_protocol_e {
+  NGAP_CAUSE_PROTOCOL_TRANSFER_SYNTAX_ERROR,
+  NGAP_CAUSE_PROTOCOL_ABSTRACT_SYNTAX_ERROR_REJECT,
+  NGAP_CAUSE_PROTOCOL_ABSTRACT_SYNTAX_ERROR_IGNORE,
+  NGAP_CAUSE_PROTOCOL_MSG_NOT_COMPATIBLE_WITH_RECEIVER_STATE,
+  NGAP_CAUSE_PROTOCOL_SEMANTIC_ERROR,
+  NGAP_CAUSE_PROTOCOL_ABSTRACT_SYNTAX_ERROR_FCM,
+  NGAP_CAUSE_PROTOCOL_UNSPECIFIED
+} ngap_cause_protocol_t;
 
 typedef struct pdusession_failed_s {
   /* Unique pdusession_id for the UE. */
@@ -581,6 +596,8 @@ typedef struct ngap_ue_ctxt_modification_resp_s {
 
 typedef struct ngap_ue_release_complete_s {
   uint32_t gNB_ue_ngap_id;
+  int num_pdu_sessions;
+  uint32_t pdu_session_id[256];
 } ngap_ue_release_complete_t;
 
 //-------------------------------------------------------------------------------------------//

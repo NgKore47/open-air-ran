@@ -30,7 +30,6 @@
 * \warning
 */
 
-#include "openair1/SCHED_NR/fapi_nr_l1.h"
 #include "openair2/NR_PHY_INTERFACE/NR_IF_Module.h"
 #include "LAYER2/NR_MAC_COMMON/nr_mac_extern.h"
 #include "LAYER2/NR_MAC_gNB/mac_proto.h"
@@ -42,7 +41,6 @@
 #include "openair2/NR_PHY_INTERFACE/nr_sched_response.h"
 
 #define MAX_IF_MODULES 100
-//#define UL_HARQ_PRINT
 
 static NR_IF_Module_t *nr_if_inst[MAX_IF_MODULES];
 extern int oai_nfapi_harq_indication(nfapi_harq_indication_t *harq_ind);
@@ -80,8 +78,9 @@ void handle_nr_rach(NR_UL_IND_t *UL_info)
     LOG_D(MAC,"UL_info[Frame %d, Slot %d] Calling initiate_ra_proc RACH:SFN/SLOT:%d/%d\n",
           UL_info->frame, UL_info->slot, UL_info->rach_ind.sfn, UL_info->rach_ind.slot);
     for (int i = 0; i < UL_info->rach_ind.number_of_pdus; i++) {
-      UL_info->rach_ind.number_of_pdus--;
-      AssertFatal(UL_info->rach_ind.pdu_list[i].num_preamble == 1, "More than 1 preamble not supported\n");
+      if (UL_info->rach_ind.pdu_list[i].num_preamble > 1) {
+	LOG_E(MAC, "Not more than 1 preamble per RACH PDU supported, ignoring the rest\n");
+      }
       nr_initiate_ra_proc(UL_info->module_id,
                           UL_info->CC_id,
                           UL_info->rach_ind.sfn,
@@ -177,6 +176,9 @@ void handle_nr_ulsch(NR_UL_IND_t *UL_info)
   }
 
   if (UL_info->rx_ind.number_of_pdus > 0 && UL_info->crc_ind.number_crcs > 0) {
+    // see nr_fill_indication about why this mutex is necessary
+    int rc = pthread_mutex_lock(&UL_info->crc_rx_mutex);
+    DevAssert(rc == 0);
     AssertFatal(UL_info->rx_ind.number_of_pdus == UL_info->crc_ind.number_crcs,
                 "number_of_pdus %d, number_crcs %d\n",
                 UL_info->rx_ind.number_of_pdus, UL_info->crc_ind.number_crcs);
@@ -190,6 +192,9 @@ void handle_nr_ulsch(NR_UL_IND_t *UL_info)
       AssertFatal(crc->rnti == rx->rnti, "mis-match between CRC RNTI %04x and RX RNTI %04x\n",
                   crc->rnti, rx->rnti);
 
+      AssertFatal(crc->harq_id == rx->harq_id, "mis-match between CRC HARQ ID %04x and RX HARQ ID %04x\n",
+                  crc->harq_id, rx->harq_id);
+
       LOG_D(NR_MAC,
             "%4d.%2d Calling rx_sdu (CRC %s/tb_crc_status %d)\n",
             UL_info->frame,
@@ -202,17 +207,20 @@ void handle_nr_ulsch(NR_UL_IND_t *UL_info)
                 UL_info->CC_id,
                 UL_info->rx_ind.sfn,
                 UL_info->rx_ind.slot,
-                rx->rnti,
+                crc->rnti,
                 crc->tb_crc_status ? NULL : rx->pdu,
                 rx->pdu_length,
-                rx->timing_advance,
-                rx->ul_cqi,
-                rx->rssi);
+                crc->harq_id,
+                crc->timing_advance,
+                crc->ul_cqi,
+                crc->rssi);
       handle_nr_ul_harq(UL_info->CC_id, UL_info->module_id, UL_info->frame, UL_info->slot, crc);
     }
+    UL_info->rx_ind.number_of_pdus = 0;
+    UL_info->crc_ind.number_crcs = 0;
+    rc = pthread_mutex_unlock(&UL_info->crc_rx_mutex);
+    DevAssert(rc == 0);
   }
-  UL_info->rx_ind.number_of_pdus = 0;
-  UL_info->crc_ind.number_crcs = 0;
 }
 
 void handle_nr_srs(NR_UL_IND_t *UL_info) {
@@ -251,10 +259,6 @@ static void free_unqueued_nfapi_indications(nfapi_nr_rach_indication_t *rach_ind
                                             nfapi_nr_crc_indication_t *crc_ind) {
   if (rach_ind && rach_ind->number_of_pdus > 0)
   {
-    for(int i = 0; i < rach_ind->number_of_pdus; i++)
-    {
-      free_and_zero(rach_ind->pdu_list[i].preamble_list);
-    }
     free_and_zero(rach_ind->pdu_list);
     free_and_zero(rach_ind);
   }
@@ -267,6 +271,9 @@ static void free_unqueued_nfapi_indications(nfapi_nr_rach_indication_t *rach_ind
   }
   if (rx_ind && rx_ind->number_of_pdus > 0)
   {
+    for (int i = 0; i < rx_ind->number_of_pdus; ++i) {
+      free_and_zero(rx_ind->pdu_list[i].pdu);
+    }
     free_and_zero(rx_ind->pdu_list);
     free_and_zero(rx_ind);
   }
@@ -388,11 +395,9 @@ static void match_crc_rx_pdu(nfapi_nr_rx_data_indication_t *rx_ind, nfapi_nr_crc
 static void run_scheduler(module_id_t module_id, int CC_id, int frame, int slot)
 {
   NR_IF_Module_t *ifi = nr_if_inst[module_id];
-  // gNB_MAC_INST     *mac        = RC.nrmac[module_id];
 
-  NR_Sched_Rsp_t *sched_info;
   LOG_D(NR_MAC, "Calling scheduler for %d.%d\n", frame, slot);
-  sched_info = allocate_sched_response();
+  NR_Sched_Rsp_t *sched_info = allocate_sched_response();
 
   // clear UL DCI prior to handling ULSCH
   sched_info->UL_dci_req.numPdus = 0;
@@ -440,7 +445,7 @@ void NR_UL_indication(NR_UL_IND_t *UL_info) {
   nfapi_nr_uci_indication_t *uci_ind = NULL;
   nfapi_nr_rx_data_indication_t *rx_ind = NULL;
   nfapi_nr_crc_indication_t *crc_ind = NULL;
-  if (get_softmodem_params()->emulate_l1)
+  if (get_softmodem_params()->emulate_l1 || NFAPI_MODE == NFAPI_MODE_AERIAL)
   {
     if (gnb_rach_ind_queue.num_items > 0) {
       LOG_D(NR_MAC, "gnb_rach_ind_queue size = %zu\n", gnb_rach_ind_queue.num_items);
@@ -483,7 +488,7 @@ void NR_UL_indication(NR_UL_IND_t *UL_info) {
   handle_nr_ulsch(UL_info);
   handle_nr_srs(UL_info);
 
-  if (get_softmodem_params()->emulate_l1) {
+  if (get_softmodem_params()->emulate_l1 || NFAPI_MODE == NFAPI_MODE_AERIAL) {
     free_unqueued_nfapi_indications(rach_ind, uci_ind, rx_ind, crc_ind);
   }
 }

@@ -11,7 +11,6 @@
 
 #include "stddef.h"
 #include "nfapi_interface.h"
-#include "nfapi_nr_interface.h"
 
 #define NFAPI_NR_MAX_NB_CCE_AGGREGATION_LEVELS 5
 #define NFAPI_NR_MAX_NB_TCI_STATES_PDCCH 64
@@ -26,18 +25,12 @@
 
 // Extension to the generic structures for single tlv values
 
-
-typedef enum {
-  NFAPI_NR_DMRS_TYPE1=0,
-  NFAPI_NR_DMRS_TYPE2
-} nfapi_nr_dmrs_type_e;
-
-
 typedef struct {
-  /// Value: 0 -> 1, 0: Payload is carried directly in the value field, 1: Pointer to payload is in the value field 
-  uint16_t tag; 
-  /// Length of the actual payload in bytes, without the padding bytes Value: 0 → 65535
-  uint16_t length;
+  /// Value: 0 -> 1, 0: Payload is carried directly in the value field, 1: Pointer to payload is in the value field
+  uint16_t tag;
+  /// Length of the actual payload in bytes, without the padding bytes Value: 0 → 0xFFFFFFFF
+  /// Note: This change to uint32_t is a deviation from version 10.02 of the SCF222 standard
+  uint32_t length;
   union { 
     uint32_t *ptr;
     uint32_t direct[38016];
@@ -51,36 +44,36 @@ typedef struct {
 //PHY API message types
 
 typedef enum {
-  NFAPI_NR_PHY_MSG_TYPE_PARAM_REQUEST=  0x00,
-  NFAPI_NR_PHY_MSG_TYPE_PARAM_RESPONSE= 0x01,
-  NFAPI_NR_PHY_MSG_TYPE_CONFIG_REQUEST= 0x02,
-  NFAPI_NR_PHY_MSG_TYPE_CONFIG_RESPONSE=0X03,
-  NFAPI_NR_PHY_MSG_TYPE_START_REQUEST=  0X04,
-  NFAPI_NR_PHY_MSG_TYPE_STOP_REQUEST=   0X05,
-  NFAPI_NR_PHY_MSG_TYPE_STOP_INDICATION=0X06,
-  NFAPI_NR_PHY_MSG_TYPE_ERROR_INDICATION=0X07,
-  NFAPI_NR_PHY_MSG_TYPE_START_RESPONSE=0X010D,
-  NFAPI_NR_PHY_MSG_TYPE_STOP_RESPONSE=0X010F,
-  //RESERVED 0X08 ~ 0X7F
-  NFAPI_NR_PHY_MSG_TYPE_DL_TTI_REQUEST= 0X80,
-  NFAPI_NR_PHY_MSG_TYPE_UL_TTI_REQUEST= 0X81,
-  NFAPI_NR_PHY_MSG_TYPE_SLOT_INDICATION=0X82,
-  NFAPI_NR_PHY_MSG_TYPE_UL_DCI_REQUEST= 0X83,
-  NFAPI_NR_PHY_MSG_TYPE_TX_DATA_REQUEST=0X84, // CHANGED TO 0X84
-  NFAPI_NR_PHY_MSG_TYPE_RX_DATA_INDICATION=0X85,
-  NFAPI_NR_PHY_MSG_TYPE_CRC_INDICATION= 0X86,
-  NFAPI_NR_PHY_MSG_TYPE_UCI_INDICATION= 0X87,
-  NFAPI_NR_PHY_MSG_TYPE_SRS_INDICATION= 0X88,
-  NFAPI_NR_PHY_MSG_TYPE_RACH_INDICATION= 0X89,
-  //RESERVED 0X8a ~ 0xff
+  NFAPI_NR_PHY_MSG_TYPE_PARAM_REQUEST = 0x00,
+  NFAPI_NR_PHY_MSG_TYPE_PARAM_RESPONSE = 0x01,
+  NFAPI_NR_PHY_MSG_TYPE_CONFIG_REQUEST = 0x02,
+  NFAPI_NR_PHY_MSG_TYPE_CONFIG_RESPONSE = 0X03,
+  NFAPI_NR_PHY_MSG_TYPE_START_REQUEST = 0X04,
+  NFAPI_NR_PHY_MSG_TYPE_STOP_REQUEST = 0X05,
+  NFAPI_NR_PHY_MSG_TYPE_STOP_INDICATION = 0X06,
+  NFAPI_NR_PHY_MSG_TYPE_ERROR_INDICATION = 0X07,
+  NFAPI_NR_PHY_MSG_TYPE_START_RESPONSE = 0X0108, // SCF 222.10.04 Section 3.2 Start.Response - 0x108, as of nFAPIv2
+  NFAPI_NR_PHY_MSG_TYPE_STOP_RESPONSE = 0X010F,
+  // RESERVED 0X08 ~ 0X7F
+  NFAPI_NR_PHY_MSG_TYPE_DL_TTI_REQUEST = 0X80,
+  NFAPI_NR_PHY_MSG_TYPE_UL_TTI_REQUEST = 0X81,
+  NFAPI_NR_PHY_MSG_TYPE_SLOT_INDICATION = 0X82,
+  NFAPI_NR_PHY_MSG_TYPE_UL_DCI_REQUEST = 0X83,
+  NFAPI_NR_PHY_MSG_TYPE_TX_DATA_REQUEST = 0X84, // CHANGED TO 0X84
+  NFAPI_NR_PHY_MSG_TYPE_RX_DATA_INDICATION = 0X85,
+  NFAPI_NR_PHY_MSG_TYPE_CRC_INDICATION = 0X86,
+  NFAPI_NR_PHY_MSG_TYPE_UCI_INDICATION = 0X87,
+  NFAPI_NR_PHY_MSG_TYPE_SRS_INDICATION = 0X88,
+  NFAPI_NR_PHY_MSG_TYPE_RACH_INDICATION = 0X89,
+  // RESERVED 0X8a ~ 0xff
   NFAPI_NR_PHY_MSG_TYPE_PNF_PARAM_REQUEST = 0x0100,
   NFAPI_NR_PHY_MSG_TYPE_PNF_PARAM_RESPONSE = 0x0101,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_CONFIG_REQUEST= 0x0102,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_CONFIG_RESPONSE= 0x0103,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_START_REQUEST= 0x0104,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_START_RESPONSE= 0x0105,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_STOP_REQUEST= 0x0106,
-  NFAPI_NR_PHY_MSG_TYPE_PNF_STOP_RESPONSE= 0x0107,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_CONFIG_REQUEST = 0x0102,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_CONFIG_RESPONSE = 0x0103,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_START_REQUEST = 0x0104,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_START_RESPONSE = 0x0105,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_STOP_REQUEST = 0x0106,
+  NFAPI_NR_PHY_MSG_TYPE_PNF_STOP_RESPONSE = 0x0107,
 
   NFAPI_NR_PHY_MSG_TYPE_UL_NODE_SYNC = 0x0180,
   NFAPI_NR_PHY_MSG_TYPE_DL_NODE_SYNC,
@@ -136,7 +129,7 @@ typedef enum {
 #define  NFAPI_NR_PARAM_TLV_PDSCH_DMRS_CONFIG_TYPES_TAG 0x0017
 #define  NFAPI_NR_PARAM_TLV_PDSCH_DMRS_MAX_LENGTH_TAG 0x0018
 #define  NFAPI_NR_PARAM_TLV_PDSCH_DMRS_ADDITIONAL_POS_TAG 0x0019
-#define  NFAPI_NR_PARAM_TLV_MAX_PDSCH_S_YBS_PER_SLOT_TAG 0x001A
+#define NFAPI_NR_PARAM_TLV_MAX_PDSCH_S_TBS_PER_SLOT_TAG 0x001A
 #define  NFAPI_NR_PARAM_TLV_MAX_NUMBER_MIMO_LAYERS_PDSCH_TAG 0x001B
 #define  NFAPI_NR_PARAM_TLV_SUPPORTED_MAX_MODULATION_ORDER_DL_TAG 0x001C
 #define  NFAPI_NR_PARAM_TLV_MAX_MU_MIMO_USERS_DL_TAG 0x001D
@@ -328,6 +321,7 @@ typedef struct
 #define NFAPI_NR_CONFIG_SLOT_CONFIG_TAG 0x1027
 
 #define NFAPI_NR_CONFIG_RSSI_MEASUREMENT_TAG 0x1028
+#define NFAPI_NR_CONFIG_TDD_TABLE 0x1035
 
 //table 3-21
 typedef struct 
@@ -583,6 +577,23 @@ typedef struct {
   nfapi_nr_pm_list_t            pmi_list;
 } nfapi_nr_config_request_scf_t;
 
+typedef enum {
+  UINT_8 = sizeof(uint8_t),
+  UINT_16 = sizeof(uint16_t),
+  UINT_32 = sizeof(uint32_t),
+  ARRAY_UINT_16 = 5 * sizeof(uint16_t),
+  UNKNOWN = 0xffff
+} nfapi_nr_config_response_tlv_value_type_t;
+
+typedef struct {
+  nfapi_tl_t tl;
+  union {
+    uint8_t u8;
+    uint16_t u16;
+    uint32_t u32;
+    uint16_t array_u16[5]; // 4 TLVs defined as array ( dlK0, dlGridSize, ulK0, ulGridSize )
+  } value;
+} nfapi_nr_generic_tlv_scf_t;
 
 /* CONFIG.RESPONSE */
 typedef struct {
@@ -592,8 +603,11 @@ typedef struct {
   uint8_t num_invalid_tlvs_configured_in_idle;
   uint8_t num_invalid_tlvs_configured_in_running;
   uint8_t num_missing_tlvs;
-  // TODO: add list of invalid/unsupported TLVs (see Table 3.18)
-   nfapi_vendor_extension_tlv_t  vendor_extension;
+  nfapi_nr_generic_tlv_scf_t* invalid_tlvs_list;
+  nfapi_nr_generic_tlv_scf_t* invalid_tlvs_configured_in_idle_list;
+  nfapi_nr_generic_tlv_scf_t* invalid_tlvs_configured_in_running_list;
+  nfapi_nr_generic_tlv_scf_t* missing_tlvs_list;
+  nfapi_vendor_extension_tlv_t vendor_extension;
 } nfapi_nr_config_response_scf_t;
 
 //------------------------------//
@@ -615,13 +629,21 @@ typedef struct {
 typedef struct {
   nfapi_p4_p5_message_header_t header;
   nfapi_vendor_extension_tlv_t vendor_extension;
-} nfapi_nr_stop_request_t;
-
+} nfapi_nr_stop_request_scf_t;
 
 typedef struct {
   nfapi_p4_p5_message_header_t header;
   nfapi_vendor_extension_tlv_t vendor_extension;
-} nfapi_nr_stop_indication_t;
+} nfapi_nr_stop_indication_scf_t;
+
+typedef struct {
+  nfapi_p4_p5_message_header_t header;
+  uint16_t sfn;
+  uint16_t slot;
+  uint8_t message_id; // Which message received on the PNF has an error
+  uint8_t error_code;
+  nfapi_vendor_extension_tlv_t vendor_extension;
+} nfapi_nr_error_indication_scf_t;
 
 typedef enum {
   NFAPI_NR_STOP_MSG_INVALID_STATE
@@ -1467,11 +1489,9 @@ typedef enum {
 
 //table 3-58
 #define NFAPI_NR_MAX_TX_REQUEST_TLV 2
-typedef struct {
-  uint16_t PDU_length; // SCF 222.10.02 The total length (in bytes) of the PDU description and  PDU data, without the padding bytes.
-                       // (2 bytes PDU_Length + 2 bytes PDU_Index + 4 bytes num_TLV + TLV size ( 2 bytes tag + 2 bytes length +
-                       // value size without padding))
-                       // TBS + 12
+typedef struct
+{
+  uint32_t PDU_length;
   uint16_t PDU_index;
   uint32_t num_TLV;
   nfapi_nr_tx_data_request_tlv_t TLVs[NFAPI_NR_MAX_TX_REQUEST_TLV];
@@ -1505,7 +1525,7 @@ typedef struct
   uint32_t handle;
   uint16_t rnti;
   uint8_t  harq_id;
-  uint16_t pdu_length;
+  uint32_t pdu_length;// For Aerial, RX_DATA.indication PDULength is changed to 32 bit field
   uint8_t  ul_cqi;
   uint16_t timing_advance;//Timing advance 𝑇𝐴 measured for the UE [TS 38.213, Section 4.2] NTA_new = NTA_old + (TA − 31) ⋅ 16 ⋅ 64⁄2μ Value: 0 → 63 0xffff should be set if this field is invalid
   uint16_t rssi;
@@ -1768,7 +1788,7 @@ typedef struct{
   uint8_t  avg_rssi;
   uint8_t  avg_snr;
   uint8_t  num_preamble;
-  nfapi_nr_prach_indication_preamble_t* preamble_list;
+  nfapi_nr_prach_indication_preamble_t preamble_list[64];
 
 }nfapi_nr_prach_indication_pdu_t;
 

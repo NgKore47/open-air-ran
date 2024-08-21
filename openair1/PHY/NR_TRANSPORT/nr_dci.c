@@ -41,29 +41,13 @@
 //#define DEBUG_DCI
 //#define DEBUG_CHANNEL_CODING
 
-void nr_pdcch_scrambling(uint32_t *in,
-                         uint32_t size,
-                         uint32_t Nid,
-                         uint32_t scrambling_RNTI,
-                         uint32_t *out) {
-  uint8_t reset;
-  uint32_t x1 = 0, x2 = 0, s = 0;
-  reset = 1;
-  x2 = (scrambling_RNTI<<16) + Nid;
-  LOG_D(PHY,"PDCCH Scrambling x2 %x : scrambling_RNTI %x \n", x2, scrambling_RNTI);
-  for (int i=0; i<size; i++) {
-    if ((i&0x1f)==0) {
-      s = lte_gold_generic(&x1, &x2, reset);
-      reset = 0;
-
-      if (i) {
-        in++;
-        out++;
-      }
-    }
-
-    (*out) ^= ((((*in)>>(i&0x1f))&1) ^ ((s>>(i&0x1f))&1))<<(i&0x1f);
-  }
+static void nr_pdcch_scrambling(uint32_t *in, uint32_t size, uint32_t Nid, uint32_t scrambling_RNTI, uint32_t *out)
+{
+  int roundedSz = ((size + 31) / 32);
+  uint32_t *seq = gold_cache((scrambling_RNTI << 16) + Nid, roundedSz);
+  LOG_D(NR_PHY_DCI, "PDCCH scrambling_RNTI %x \n", scrambling_RNTI);
+  for (int i = 0; i < roundedSz; i++)
+    out[i] = in[i] ^ seq[i];
 }
 
 void nr_generate_dci(PHY_VARS_gNB *gNB,
@@ -95,32 +79,39 @@ void nr_generate_dci(PHY_VARS_gNB *gNB,
      * in time: by its first slot and its first symbol*/
     const nfapi_nr_dl_dci_pdu_t *dci_pdu = &pdcch_pdu_rel15->dci_pdu[d];
 
-    if(dci_pdu->ScramblingId != gNB->pdcch_gold_init) {
-      gNB->pdcch_gold_init = dci_pdu->ScramblingId;
-      nr_init_pdcch_dmrs(gNB, dci_pdu->ScramblingId);
-    }
-
-    uint32_t **gold_pdcch_dmrs = gNB->nr_gold_pdcch_dmrs[slot];
-
     cset_start_symb = pdcch_pdu_rel15->StartSymbolIndex;
     cset_nsymb = pdcch_pdu_rel15->DurationSymbols;
     dci_idx = 0;
-    LOG_D(PHY, "pdcch: Coreset rb_offset %d, nb_rb %d BWP Start %d\n",rb_offset,n_rb,pdcch_pdu_rel15->BWPStart);
-    LOG_D(PHY, "pdcch: Coreset starting subcarrier %d on symbol %d (%d symbols)\n", cset_start_sc, cset_start_symb, cset_nsymb);
+    LOG_D(NR_PHY_DCI, "pdcch: Coreset rb_offset %d, nb_rb %d BWP Start %d\n", rb_offset, n_rb, pdcch_pdu_rel15->BWPStart);
+    LOG_D(NR_PHY_DCI,
+          "pdcch: Coreset starting subcarrier %d on symbol %d (%d symbols)\n",
+          cset_start_sc,
+          cset_start_symb,
+          cset_nsymb);
     // DMRS length is per OFDM symbol
     uint32_t dmrs_length = (n_rb+pdcch_pdu_rel15->BWPStart)*6; //2(QPSK)*3(per RB)*6(REG per CCE)
     uint32_t encoded_length = dci_pdu->AggregationLevel*108; //2(QPSK)*9(per RB)*6(REG per CCE)
     if (dci_pdu->RNTI != 0xFFFF)
-      LOG_D(PHY, "DL_DCI : rb_offset %d, nb_rb %d, DMRS length per symbol %d\t DCI encoded length %d (precoder_granularity %d, reg_mapping %d), Scrambling_Id %d, ScramblingRNTI %x, PayloadSizeBits %d\n",
-            rb_offset, n_rb,dmrs_length, encoded_length,pdcch_pdu_rel15->precoderGranularity,pdcch_pdu_rel15->CceRegMappingType,
-            dci_pdu->ScramblingId,dci_pdu->ScramblingRNTI,dci_pdu->PayloadSizeBits);
+      LOG_D(NR_PHY_DCI,
+            "DL_DCI : rb_offset %d, nb_rb %d, DMRS length per symbol %d\t DCI encoded length %d (precoder_granularity %d, "
+            "reg_mapping %d), Scrambling_Id %d, ScramblingRNTI %x, PayloadSizeBits %d\n",
+            rb_offset,
+            n_rb,
+            dmrs_length,
+            encoded_length,
+            pdcch_pdu_rel15->precoderGranularity,
+            pdcch_pdu_rel15->CceRegMappingType,
+            dci_pdu->ScramblingId,
+            dci_pdu->ScramblingRNTI,
+            dci_pdu->PayloadSizeBits);
     dmrs_length += rb_offset*6; // To accommodate more DMRS symbols in case of rb offset
       
     /// DMRS QPSK modulation
     for (int symb=cset_start_symb; symb<cset_start_symb + pdcch_pdu_rel15->DurationSymbols; symb++) {
+      const uint32_t *gold = nr_gold_pdcch(frame_parms->N_RB_DL, frame_parms->symbols_per_slot, dci_pdu->ScramblingId, slot, symb);
+      nr_modulation(gold, dmrs_length, DMRS_MOD_ORDER,
+                    mod_dmrs[symb]); // Qm = 2 as DMRS is QPSK modulated
 
-      nr_modulation(gold_pdcch_dmrs[symb], dmrs_length, DMRS_MOD_ORDER, mod_dmrs[symb]); //Qm = 2 as DMRS is QPSK modulated
-      
 #ifdef DEBUG_PDCCH_DMRS
       if(dci_pdu->RNTI!=0xFFFF) {
         for (int i=0; i<dmrs_length>>1; i++)
@@ -182,7 +173,7 @@ void nr_generate_dci(PHY_VARS_gNB *gNB,
       // allocating rbs per symbol
       for (int reg_count = 0; reg_count < num_regs; reg_count++) {
         k = cset_start_sc + reg_list[d][reg_count] * NR_NB_SC_PER_RB;
-        LOG_D(PHY, "REG %d k %d\n", reg_list[d][reg_count], k);
+        LOG_D(NR_PHY_DCI, "REG %d k %d\n", reg_list[d][reg_count], k);
         if (k >= frame_parms->ofdm_symbol_size)
           k -= frame_parms->ofdm_symbol_size;
 
@@ -202,7 +193,7 @@ void nr_generate_dci(PHY_VARS_gNB *gNB,
             ((int16_t *)txdataF)[((l * frame_parms->ofdm_symbol_size + k) << 1) + 1] = (amp * mod_dmrs[l][(dmrs_idx << 1) + 1]) >> 15;
 
 #ifdef DEBUG_PDCCH_DMRS
-            LOG_I(PHY,
+            LOG_I(NR_PHY_DCI,
                   "PDCCH DMRS %d: l %d position %d => (%d,%d)\n",
                   dmrs_idx,
                   l,
@@ -218,7 +209,7 @@ void nr_generate_dci(PHY_VARS_gNB *gNB,
             ((int16_t *)txdataF)[(l * frame_parms->ofdm_symbol_size + k) << 1] = (amp * mod_dci[dci_idx << 1]) >> 15;
             ((int16_t *)txdataF)[((l * frame_parms->ofdm_symbol_size + k) << 1) + 1] = (amp * mod_dci[(dci_idx << 1) + 1]) >> 15;
 #ifdef DEBUG_DCI
-            LOG_I(PHY,
+            LOG_I(NR_PHY_DCI,
                   "PDCCH: l %d position %d => (%d,%d)\n",
                   l,
                   k,
@@ -237,7 +228,7 @@ void nr_generate_dci(PHY_VARS_gNB *gNB,
       } // reg_count
     } // symbol_idx
 
-    LOG_D(PHY,
+    LOG_D(NR_PHY_DCI,
           "DCI: payloadSize = %d | payload = %llx\n",
           dci_pdu->PayloadSizeBits,
           *(unsigned long long *)dci_pdu->Payload);
